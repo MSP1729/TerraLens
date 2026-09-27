@@ -3,6 +3,7 @@ Run: python app.py   (Windows venv: python app.py)
 Set COLAB_URL to the live https://...gradio.live URL before running.
 """
 import json
+import html
 import os
 import re
 import tempfile
@@ -142,6 +143,60 @@ def save_report(summary, trace, metrics, warnings, gallery):
               "note": "Exploratory output, not calibrated classification or field-verified ground truth."}
     with open(root / "report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+    # Self-contained HTML: evidence stays visible even if only the HTML is opened.
+    import base64
+    metric_rows = "".join(
+        "<tr><th>" + html.escape(str(k).replace("_", " ").title()) + "</th><td>"
+        + html.escape(str(v)) + "</td></tr>" for k, v in metrics.items()
+    ) or "<tr><td>No numeric metrics for this analysis.</td></tr>"
+    steps = []
+    for i, entry in enumerate(trace, 1):
+        label = entry.get("tool") or "Controller"
+        if label == "Controller":
+            explanation = "Selected task: " + str(entry.get("task", "analysis"))
+            chosen = entry.get("tools_selected") or []
+            if chosen:
+                explanation += "; tools chosen: " + ", ".join(map(str, chosen))
+        else:
+            descriptions = {"inspect": "Checked uploaded images and compatibility",
+                            "remote_vqa": "Asked the vision model about an image",
+                            "change": "Measured pixel change between images",
+                            "fusion": "Combined optical and radar image evidence",
+                            "evidence": "Prepared visuals and report"}
+            explanation = descriptions.get(label, str(label).replace("_", " "))
+        state = entry.get("status")
+        if state:
+            explanation += " (" + str(state) + ")"
+        if entry.get("reason"):
+            explanation += ": " + str(entry["reason"])
+        if entry.get("error"):
+            explanation += ": " + str(entry["error"])
+        steps.append("<li>" + html.escape(explanation) + "</li>")
+    warnings_html = "".join("<li>" + html.escape(str(w)) + "</li>" for w in warnings) or "<li>None recorded.</li>"
+    figures = []
+    for img in images:
+        encoded = base64.b64encode((root / img["file"]).read_bytes()).decode("ascii")
+        caption = html.escape(img["caption"])
+        figures.append('<figure><img alt="' + caption + '" src="data:image/png;base64,' + encoded
+                       + '"><figcaption>' + caption + '</figcaption></figure>')
+    page = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>SatQuery AI analysis report</title>"
+            "<style>body{font:16px/1.55 system-ui,Arial,sans-serif;max-width:960px;margin:36px auto;padding:0 18px;color:#172638;background:#f7f9fc}"
+            "h1,h2{color:#113e6b}section,figure{background:#fff;border:1px solid #dce5ef;border-radius:12px;padding:20px;margin:18px 0}"
+            "table{border-collapse:collapse;width:100%}th,td{padding:9px;text-align:left;border-bottom:1px solid #e2e8f0}"
+            "th{width:55%}img{display:block;width:100%;height:auto;max-height:650px;object-fit:contain}"
+            "figcaption{font-size:14px;margin-top:8px;color:#526479}li{margin:7px 0}"
+            "pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere}</style></head><body>"
+            "<h1>SatQuery AI - analysis report</h1><p>Generated UTC: "
+            + html.escape(report["generated_utc"]) + "</p>"
+            + "<section><h2>Results</h2><pre>" + html.escape(summary) + "</pre></section>"
+            + "<section><h2>Metrics</h2><table>" + metric_rows + "</table></section>"
+            + "<section><h2>What the app did</h2><ol>" + "".join(steps) + "</ol></section>"
+            + "<section><h2>Warnings</h2><ul>" + warnings_html + "</ul></section>"
+            + "<section><h2>Visual evidence</h2>" + "".join(figures) + "</section>"
+            + "<p>" + html.escape(report["note"]) + "</p></body></html>")
+    (root / "report.html").write_text(page, encoding="utf-8")
     import zipfile
     destination = OUT / (key + ".zip")
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as z:

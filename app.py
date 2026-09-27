@@ -204,10 +204,26 @@ def run(task, modality1, modality2, file1, file2, question, green_band, nir_band
             metrics.update(change_threshold_8bit=round(threshold, 2), changed_valid_pixels_percent=round(float(pct), 2), valid_pixels=int(both.sum()))
             gallery.append((render_mask(two, mask), "Red: pixels with strong display-scale difference (not ground-truth change)"))
             trace.append({"tool": "change", "status": "ok", "params": {"method": "mean absolute display-RGB difference", "threshold_8bit": threshold, "same_grid": alignment}})
+            # Shared threshold across both dates makes the brightness proxy comparable.
+            before_brightness = one["rgb"].mean(axis=2)
+            after_brightness = two["rgb"].mean(axis=2)
+            bright_threshold = float(np.percentile(np.concatenate((before_brightness[both], after_brightness[both])), 75))
+            built_before_pct = 100 * np.count_nonzero((before_brightness >= bright_threshold) & both) / both.sum()
+            built_after_pct = 100 * np.count_nonzero((after_brightness >= bright_threshold) & both) / both.sum()
+            built_delta_pp = built_after_pct - built_before_pct
+            metrics.update(bright_built_proxy_before_percent=round(built_before_pct, 2),
+                           bright_built_proxy_after_percent=round(built_after_pct, 2),
+                           bright_built_proxy_change_percentage_points=round(built_delta_pp, 2))
+            trace.append({"tool": "change", "status": "ok", "params": {"brightness_proxy": "RGB mean >= pooled 75th percentile",
+                          "threshold_8bit": round(bright_threshold, 2)}, "note": "Exploratory bright-surface proxy; not confirmed buildings."})
             before = remote_ask(one, "Describe the land cover and major objects in this image briefly.", trace)
             after = remote_ask(two, "Describe the land cover and major objects in this image briefly.", trace)
-            summary = f"Before (VLM): {before}\n\nAfter (VLM): {after}\n\nStrong display-scale pixel difference: {pct:.1f}% of valid area. Compare these descriptions cautiously; this is not a verified land-cover transition."
-            warnings.append("Changes in lighting, season, clouds, speckle, or registration may cause false positives. Independently verify geolocation and acquisition dates.")
+            summary = (f"Strong display-scale pixel difference: {pct:.1f}% of valid area.\n"
+                       f"Bright built-up proxy: {built_before_pct:.1f}% before -> {built_after_pct:.1f}% after "
+                       f"({built_delta_pp:+.1f} percentage points).\n\n"
+                       f"Before (VLM): {before}\n\nAfter (VLM): {after}\n\n"
+                       "Compare these descriptions cautiously; this is not a verified land-cover transition.")
+            warnings.append("Bright built-up proxy is only a brightness estimate, not building detection; lighting, season, clouds, speckle, or registration may cause false positives. Independently verify geolocation and acquisition dates.")
             confidence = "Heuristic only; no calibrated confidence."
         elif intent == "Optical + SAR fusion":
             if two is None or {modality1, modality2} != {"Optical", "SAR"}:
@@ -248,10 +264,13 @@ def run(task, modality1, modality2, file1, file2, question, green_band, nir_band
                            sar_low_threshold=round(s_threshold, 5), valid_pixels=int(valid.sum()))
             fused = optical["rgb"].copy()
             fused[water] = (0.4 * fused[water] + 0.6 * np.array([20, 115, 255])).astype(np.uint8)
-            fused[built_proxy] = (0.4 * fused[built_proxy] + 0.6 * np.array([255, 150, 15])).astype(np.uint8)
-            gallery.append((small_image(fused), "Blue: fused water proxy; orange: bright built-up proxy"))
+            fused[built_proxy] = (0.4 * fused[built_proxy] + 0.6 * np.array([255, 45, 45])).astype(np.uint8)
+            gallery.append((small_image(fused), "Blue: fused water proxy; red: bright built-up proxy (60% color overlay)"))
             desc = remote_ask(optical, question or "Describe visible water and built-up areas in this satellite image.", trace)
-            summary = f"Optical VLM description: {desc}\n\nFused water proxy: {metrics['water_proxy_percent']}% of valid pixels. Bright built-up proxy: {metrics['bright_built_proxy_percent']}%. These are exploratory masks, not validated classes."
+            summary = (f"Fused water proxy: {metrics['water_proxy_percent']}% of valid pixels.\n"
+                       f"Bright built-up proxy: {metrics['bright_built_proxy_percent']}%.\n\n"
+                       f"Optical VLM description (may be wrong): {desc}\n\n"
+                       "These are exploratory masks, not validated classes.")
             warnings.append("SAR water proxy assumes low backscatter means water; confirm band, scale, polarization and preprocessing. Bright surfaces are not necessarily built-up.")
             confidence = "Heuristic only; no calibrated confidence."
         else:

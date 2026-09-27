@@ -151,7 +151,7 @@ def save_report(summary, trace, metrics, warnings, gallery):
     return str(destination)
 
 
-def run(task, modality1, modality2, file1, file2, question, green_band, nir_band):
+def run(task, modality1, modality2, file1, file2, question, green_band, nir_band, red_band):
     """Registry-driven controller. Band numbers are 1-based for optical TIFFs."""
     trace, gallery, warnings, metrics = [], [], [], {}
     registry = {"inspect": "validate files/bands/grid", "remote_vqa": "Colab satellite VLM",
@@ -240,13 +240,13 @@ def run(task, modality1, modality2, file1, file2, question, green_band, nir_band
             s_threshold = float(np.percentile(s[valid], 25))
             low_sar = (s <= s_threshold) & valid
             o = optical["data"]
-            gb, nb = int(green_band), int(nir_band)
+            gb, nb, rb = int(green_band), int(nir_band), int(red_band)
             if optical["meta"]["format"] in {".png", ".jpg", ".jpeg"}:
                 ndwi = None
                 warnings.append("Optical PNG/JPEG is RGB; NDWI is unavailable without a known NIR band.")
             elif gb < 1 or nb < 1 or gb == nb or max(gb, nb) > o.shape[0]:
                 ndwi = None
-                warnings.append("Green/NIR band indices missing or outside the first four TIFF bands; NDWI unavailable.")
+                warnings.append("Green/NIR band indices missing or outside the TIFF band count; NDWI unavailable.")
             else:
                 green, nir = o[gb - 1], o[nb - 1]
                 ndwi = (green - nir) / (green + nir + 1e-6)
@@ -258,17 +258,37 @@ def run(task, modality1, modality2, file1, file2, question, green_band, nir_band
                 trace.append({"tool": "fusion", "status": "ok", "params": {"sar_low_quantile": 25, "optical_index": "unavailable"}})
             brightness = optical["rgb"].mean(axis=2)
             bright_cutoff = float(np.percentile(brightness[valid], 75))
-            built_proxy = (brightness >= bright_cutoff) & (~water) & valid
+            bright_nonwater = (brightness >= bright_cutoff) & (~water) & valid
+            vegetation_excluded = 0
+            # NDVI > 0.2 indicates likely vegetation. Only compute it from an
+            # optical TIFF with explicit red and NIR bands; RGB has no NIR.
+            if (optical["meta"]["format"] in {".tif", ".tiff"}
+                    and 1 <= rb <= o.shape[0] and 1 <= nb <= o.shape[0] and rb != nb):
+                red, nir_for_ndvi = o[rb - 1], o[nb - 1]
+                ndvi = (nir_for_ndvi - red) / (nir_for_ndvi + red + 1e-6)
+                vegetation = (ndvi > 0.2) & valid
+                built_proxy = bright_nonwater & (~vegetation)
+                vegetation_excluded = int(np.count_nonzero(bright_nonwater & vegetation))
+                trace.append({"tool": "fusion", "status": "ok", "params": {
+                    "vegetation_filter": "NDVI > 0.2", "red_band_1based": rb,
+                    "nir_band_1based": nb, "excluded_bright_pixels": vegetation_excluded}})
+            else:
+                built_proxy = bright_nonwater
+                warnings.append("NDVI vegetation filter unavailable: supply an optical TIFF and distinct, valid red/NIR band numbers. Red overlay may include vegetation.")
+                trace.append({"tool": "fusion", "status": "skipped", "params": {
+                    "vegetation_filter": "NDVI > 0.2", "red_band_1based": rb,
+                    "nir_band_1based": nb}})
             metrics.update(water_proxy_percent=round(float(100 * water.sum() / valid.sum()), 2),
                            bright_built_proxy_percent=round(float(100 * built_proxy.sum() / valid.sum()), 2),
-                           sar_low_threshold=round(s_threshold, 5), valid_pixels=int(valid.sum()))
+                           sar_low_threshold=round(s_threshold, 5), valid_pixels=int(valid.sum()),
+                           bright_pixels_excluded_as_vegetation=vegetation_excluded)
             fused = optical["rgb"].copy()
             fused[water] = (0.4 * fused[water] + 0.6 * np.array([20, 115, 255])).astype(np.uint8)
             fused[built_proxy] = (0.4 * fused[built_proxy] + 0.6 * np.array([255, 45, 45])).astype(np.uint8)
-            gallery.append((small_image(fused), "Blue: fused water proxy; red: bright built-up proxy (60% color overlay)"))
+            gallery.append((small_image(fused), "Blue: fused water proxy; red: bright possible built-up after NDVI vegetation filter when available (60% color overlay)"))
             desc = remote_ask(optical, question or "Describe visible water and built-up areas in this satellite image.", trace)
             summary = (f"Fused water proxy: {metrics['water_proxy_percent']}% of valid pixels.\n"
-                       f"Bright built-up proxy: {metrics['bright_built_proxy_percent']}%.\n\n"
+                       f"Bright possible built-up proxy (vegetation-filtered when available): {metrics['bright_built_proxy_percent']}%.\n\n"
                        f"Optical VLM description (may be wrong): {desc}\n\n"
                        "These are exploratory masks, not validated classes.")
             warnings.append("SAR water proxy assumes low backscatter means water; confirm band, scale, polarization and preprocessing. Bright surfaces are not necessarily built-up.")
@@ -297,14 +317,15 @@ with gr.Blocks(title="SatQuery AI") as demo:
         file2 = gr.File(label="Image 2 (change/fusion only)", type="filepath", file_types=[".tif", ".tiff", ".png", ".jpg", ".jpeg"])
         modality2 = gr.Dropdown(["Optical", "SAR"], value="Optical", label="Image 2 modality")
     with gr.Row():
-        green = gr.Number(value=2, precision=0, label="Green band (1-based TIFF band; fusion)")
-        nir = gr.Number(value=4, precision=0, label="NIR band (1-based TIFF band; fusion)")
+        green = gr.Number(value=3, precision=0, label="Green band (1-based TIFF band; fusion)")
+        nir = gr.Number(value=8, precision=0, label="NIR band (1-based TIFF band; fusion)")
+        red = gr.Number(value=4, precision=0, label="Red band (1-based TIFF band; NDVI vegetation filter)")
     button = gr.Button("Analyze", variant="primary")
     answer = gr.Textbox(label="Result / caveats", lines=12)
     gallery = gr.Gallery(label="Visual evidence", columns=2, height=400)
     trace = gr.Code(label="Execution trace", language="json")
     report = gr.File(label="Download report and images (ZIP)")
-    button.click(run, inputs=[task, modality1, modality2, file1, file2, question, green, nir], outputs=[answer, gallery, trace, report])
+    button.click(run, inputs=[task, modality1, modality2, file1, file2, question, green, nir, red], outputs=[answer, gallery, trace, report])
 
 if __name__ == "__main__":
     demo.launch(inbrowser=True)

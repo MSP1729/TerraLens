@@ -18,7 +18,8 @@ try:
     import rasterio
 except ImportError:
     rasterio = None
-COLAB_URL = "https://6bed40d139a1f60fa5.gradio.live"
+
+COLAB_URL = "http://127.0.0.1:7870"   
 MAX_MB = 150
 MAX_PIXELS = 36_000_000
 OUT = Path(tempfile.gettempdir()) / "satquery_outputs"
@@ -104,7 +105,7 @@ def remote_ask(item, question, trace):
         trace.append({"tool": "remote_vqa", "status": "skipped", "reason": "COLAB_URL is blank"})
         return "Remote VQA unavailable: add the live Colab URL at the top of app.py."
     url = COLAB_URL.strip()
-    if not re.fullmatch(r"https://[\w-]+\.gradio\.live/?", url):
+    if not re.fullmatch(r"(https://[\w-]+\.gradio\.live|http://127\.0\.0\.1:\d+)/?", url):
         trace.append({"tool": "remote_vqa", "status": "skipped", "reason": "invalid URL"})
         return "Remote VQA unavailable: COLAB_URL must be a live https://...gradio.live URL."
     image_path = OUT / (next(tempfile._get_candidate_names()) + ".png")

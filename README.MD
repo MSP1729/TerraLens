@@ -1,82 +1,57 @@
-# SatQuery AI
+# TerraLens
 
-Satellite-image question answering and exploratory multi-image analysis for the Smart India Hackathon ISRO/SAC problem. SatQuery pairs a remote-sensing vision-language model with simple, auditable image-analysis tools. The app can call an online GPU endpoint, or run with a local model server when internet access is unavailable.
+TerraLens is a natural-language assistant for satellite imagery, built by Team Kairox for Smart India Hackathon 2026 (SIH26227, Ministry of Defence: semantic retrieval and multi-temporal change analysis).
 
-> Prototype, not a validated geospatial measurement system. Check every result against the imagery, band order, acquisition conditions and ground truth before using it for decisions.
+Analysts ask a question in plain language and get an answer, a caption and supporting evidence, without GIS or remote-sensing expertise.
 
-## What it does
+## Features
 
-- **Ask or describe:** upload an image and ask a question, or request a scene caption from [AdaptLLM/remote-sensing-Qwen2.5-VL-3B-Instruct](https://huggingface.co/AdaptLLM/remote-sensing-Qwen2.5-VL-3B-Instruct).
-- **Before/after change:** compare two same-grid images, show a pixel-difference overlay and the percentage of pixels flagged. A bright-surface proxy reports before/after percentages and the change in percentage points; it does **not** measure confirmed urban growth.
-- **Optical + SAR fusion:** combine aligned optical and SAR images, show a blue water proxy and red bright-surface/possible-built-up proxy. For a TIFF with suitable bands, NDWI helps the water proxy and NDVI filters likely vegetation out of the red mask. Bare soil and other bright surfaces can still appear red.
-- **Visible reasoning and exports:** a rule-based controller chooses checks, VLM calls and image tools based on the task and uploaded modalities. The UI shows an execution trace. Download a ZIP containing a readable, self-contained `report.html` (with images, metrics and steps), `report.json`, and evidence PNGs.
+Built in this prototype:
+- Visual question answering and captioning on optical and SAR images (AdaptLLM/remote-sensing-Qwen2.5-VL-3B-Instruct, run locally in 4-bit or on a remote GPU backend)
+- Change analysis between two dates: change mask, changed-area percentage and a bright built-up proxy, with caveats
+- Archive search: image embeddings stored in a FAISS index, searched by text query, fully local
+- Cluster view: K-means over archive embeddings for exploring a large archive without labels
 
-Supported inputs: GeoTIFF/TIFF, PNG and JPEG. Paired images must have the same pixel dimensions; georeferenced images must also match CRS and pixel transform. Same-size PNG/JPEG files cannot prove geographic alignment. TIFF band numbers are 1-based; **the default Green=3, Red=4, NIR=8 is for the example Sentinel-2 band order, not every TIFF.** Check band metadata before analysis.
+Proposed (not built yet):
+- Trained change-detection model (Siamese / ChangeFormer)
+- Validated optical + SAR fusion
+- Visual grounding with verified boxes
 
-## Requirements
+## Important limits
+- Change masks are heuristic screening, not verified land-cover transitions.
+- The built-up value is a brightness proxy, not building detection.
+- Clusters are exploratory, not verified land-use classes.
+- Always verify geolocation and acquisition dates independently.
 
-- Python in a virtual environment on Windows; NVIDIA CUDA-capable GPU for **offline model inference**. The offline 4-bit configuration has run on a 4GB laptop GPU, but memory and compatibility can vary. A first run downloads model weights; after those files and Python packages are cached, the model can run without internet.
-- For online mode, a running Kaggle/Colab GPU notebook serving the same model through Gradio with an `/ask` API, plus a live `https://...gradio.live` link. Share links are temporary and public: **do not send sensitive imagery to that endpoint.**
-- Python packages used by the app: `gradio`, `gradio_client`, `numpy`, `pillow`, `rasterio`. Offline server also needs a CUDA build of `torch`, `transformers`, `accelerate`, `qwen-vl-utils`, `bitsandbytes`.
+## Run locally (Windows, Python 3.13)
 
-From PowerShell, with your terminal in `C:\Users\ASUS\Desktop\FPL\satquery`:
+    cd satquery
+    .venv\Scripts\activate
 
-```powershell
-cd C:\Users\ASUS\Desktop\FPL\satquery
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U gradio gradio_client numpy pillow rasterio transformers accelerate qwen-vl-utils bitsandbytes
-python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
-```
+Main app (optical/SAR, VQA, change analysis):
 
-Install a CUDA-compatible PyTorch build separately if `torch` is missing or prints `False`; follow the command for your machine at <https://pytorch.org/get-started/locally/>. Offline mode will not work until CUDA is available to PyTorch. Online mode does not require a GPU on the laptop.
+    python app_offline.py        # http://127.0.0.1:7860
 
-## Run online
+Local VQA model:
 
-1. Start the GPU notebook on Kaggle or Colab with the remote-sensing model and a Gradio `ask(image, question)` interface. The notebook/server code is not currently included in this repository; the endpoint must expose `/ask` and remain running. Kaggle sessions may queue, stop or expire.
-2. In `app.py`, set `COLAB_URL` near the top to the current `https://...gradio.live` link. The old link in that file is not permanent.
-3. In the activated project terminal, run:
+    python vqa_local.py          # http://127.0.0.1:7870
 
-```powershell
-python app.py
-```
+Archive search:
 
-Open the local URL printed by Gradio (the app also attempts to open a browser tab). Your uploads are sent to the chosen online endpoint for model inference; local numerical analysis runs on your laptop.
+    python prepare_archive.py    # build the index once
+    python archive_search.py
 
-## Run offline
+Cluster view:
 
-Start the local VLM server first, then the app in a **second** PowerShell terminal. Keep both running:
+    python cluster_view.py       # http://127.0.0.1:7862
 
-```powershell
-# Terminal 1, with the virtual environment active
-python vqa_local.py
-```
+## Models and tools
+- AdaptLLM remote-sensing-Qwen2.5-VL-3B-Instruct: question answering and captioning
+- RemoteCLIP: retrieval embeddings (https://github.com/ChenDelong1999/RemoteCLIP)
+- FAISS: similarity search
+- scikit-learn: K-means clustering
+- Gradio: user interface
+- PyTorch, Hugging Face Transformers
 
-Wait for the server to load the 4-bit model and listen at `http://127.0.0.1:7870`. In another activated terminal:
-
-```powershell
-# Terminal 2
-python app_offline.py
-```
-
-`app_offline.py` calls the server on your own laptop (`127.0.0.1:7870`). For a real offline demo, download the model and dependencies in advance and verify an answer with Wi-Fi disconnected. If an API error appears, check that Terminal 1 remains open and the model loaded successfully. First loading may take time and use substantial GPU memory.
-
-## A demo flow
-
-1. Choose **Scene caption** or **VQA**, upload an optical image, ask what is visible and inspect the answer. Model text can be wrong; compare it with the actual scene.
-2. Choose **Change detection** for two aligned dates. Show the overlay, flagged-pixel percentage and before/after bright-surface proxy; do not call that percentage confirmed building growth.
-3. Choose **Optical + SAR fusion** for paired images. Check the modalities and optical band order. Show blue water and red bright possible-built-up areas. The vegetation filter needs valid red and NIR TIFF bands.
-4. Click **Download report and images (ZIP)**. Extract it and open `report.html` in a browser for the readable analysis; `report.json` holds the machine-readable trace.
-
-## Screenshots
-
-Add real screenshots from your tested app to an `assets/` folder, then uncomment these image lines. Do not use mock results as evidence.
-
-<!-- ![Task selection and image upload](assets/input-ui.png) -->
-<!-- ![Fusion overlay and numeric result](assets/fusion-result.png) -->
-<!-- ![Readable HTML report](assets/report-html.png) -->
-
-Suggested screenshots: (1) task selection and both uploads, (2) result percentages with the blue/red overlay visible, (3) extracted `report.html` showing the evidence image and analysis steps. Crop out private paths or account details before committing.
-
-## Limits and reproducibility
-
-The masks are heuristics, not trained building/water classifiers; bright farm soil may look built-up and low SAR return is not always water. Season, clouds, SAR preprocessing, sensors and image registration affect comparisons. The VLM can hallucinate and its answers have no calibrated confidence score. A `gradio.live` link will expire; update `COLAB_URL` when restarting online mode. Keep datasets and model files out of Git unless their licenses and sizes permit redistribution. Cite the [model card](https://huggingface.co/AdaptLLM/remote-sensing-Qwen2.5-VL-3B-Instruct) when presenting results.
+## Team
+Team Kairox (AIT_KAIROX), Army Institute of Technology, Pune. Smart India Hackathon 2026.
